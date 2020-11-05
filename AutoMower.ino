@@ -1,7 +1,11 @@
+
+#include "Relay.h"
+#include "PPM_Reader.h"
+
 #define PPM_RECEIVE_PIN 2
-#define PPM_NUM_CHANNELS 6
-#define PPM_DETECTION_SPACE 5000
-#define PPM_INTERRUPT_METHOD FALLING
+//#define PPM_NUM_CHANNELS 6
+//#define PPM_DETECTION_SPACE 5000
+//#define PPM_INTERRUPT_METHOD FALLING
 
 // FUTABA CHANNEL MAP STD
 #define PPM_CHANNEL_AILERON 0
@@ -16,74 +20,60 @@
 #define MOTOR_DIR_2 8
 #define MOTOR_SPEED_1 10
 #define MOTOR_SPEED_2 11
+#define ALTERNATOR_ENABLE 12
+#define MOTOR_ENABLE 13
 
 #define FORWARD 1
 #define REVERSE -1
 
 #define DEADBAND 20
 
-int ppmCurrentChannelIndex = 0; //Index 0 can be used to check the message spacing. Channel 1 is at index 1.
-int ppmChannelPeakDeltas_us[PPM_NUM_CHANNELS + 1];
-
-// PPM Time variables
-unsigned long int ppmRisingTimeStampPrev_us = 0;
-unsigned long int ppmPeakDelta_us = 0;
+Relay * motorRelay;
+PPM_Reader * ppmReader;
 
 void setup() 
 {
   // put your setup code here, to run once:
   Serial.begin(250000);
-  pinMode(PPM_RECEIVE_PIN, INPUT);
-  attachInterrupt(digitalPinToInterrupt(PPM_RECEIVE_PIN), interruptProcessPPM, PPM_INTERRUPT_METHOD);
 
   //pinMode(13, OUTPUT);
   pinMode(MOTOR_DIR_1, OUTPUT);
   pinMode(MOTOR_DIR_2, OUTPUT);
   pinMode(MOTOR_SPEED_1, OUTPUT);
   pinMode(MOTOR_SPEED_2, OUTPUT);
+  pinMode(ALTERNATOR_ENABLE, OUTPUT);
+
+  motorRelay = new Relay(static_cast<uint8_t>(MOTOR_ENABLE));
+  ppmReader = new PPM_Reader(static_cast<uint8_t>(PPM_RECEIVE_PIN), interruptProcessPPM_Wrapper);
 }
 
 void loop()
 {
   // put your main code here, to run repeatedly:
   
-  Serial.print(ppmChannelPeakDeltas_us[PPM_CHANNEL_AILERON]);Serial.print("\t");
-  Serial.print(ppmChannelPeakDeltas_us[PPM_CHANNEL_ELEVATOR]);Serial.print("\n");
-
-  /*
-  Serial.print(ppmChannelPeakDeltas_us[PPM_CHANNEL_THROTTLE]);Serial.print("\t");
-  Serial.print(ppmChannelPeakDeltas_us[PPM_CHANNEL_RUDDER]);Serial.print("\t");
-  Serial.print(ppmChannelPeakDeltas_us[PPM_CHANNEL_GEAR]);Serial.print("\t");
-  Serial.print(ppmChannelPeakDeltas_us[PPM_CHANNEL_AUX1]); Serial.print("\n");
-  */
+  Serial.print(ppmReader->getChannelOutput_us(PPM_CHANNEL_AILERON));Serial.print("\t");
+  Serial.print(ppmReader->getChannelOutput_us(PPM_CHANNEL_ELEVATOR));Serial.print("\t");
+  Serial.print(ppmReader->getChannelOutput_us(PPM_CHANNEL_THROTTLE)); Serial.print("\t");
+  Serial.print(ppmReader->getChannelOutput_us(PPM_CHANNEL_RUDDER)); Serial.print("\t");
+  Serial.print(ppmReader->getChannelOutput_us(PPM_CHANNEL_GEAR)); Serial.print("\t");
+  Serial.print(ppmReader->getChannelOutput_us(PPM_CHANNEL_AUX1)); Serial.print("\n");
   
- 
-
     //unsigned long int throttle_us = ppmChannelPeakDeltas_us[PPM_CHANNEL_THROTTLE];
-  
-    unsigned long int steering_us = ppmChannelPeakDeltas_us[PPM_CHANNEL_AILERON];
-    unsigned long int throttle_us = ppmChannelPeakDeltas_us[PPM_CHANNEL_ELEVATOR];
 
-    if(throttle_us < 1000)
-    {
-      throttle_us = 1000;
-    }
-    if(throttle_us > 2000)
-    {
-      throttle_us = 2000;
-    }
-    
-    if(steering_us < 1000)
-    {
-      steering_us = 1000;
-    }
-    if(steering_us > 2000)
-    {
-      steering_us = 2000;
-    }
+	int motorInhibitPwm = ppmReader->getChannelOutput_us(PPM_CHANNEL_GEAR);
+	if (motorInhibitPwm >= 1500)
+	{
+		motorRelay->setEnabled(false);
+		Serial.print("DISABLE\n");
+	}
+	else
+	{
+		motorRelay->setEnabled(true);
+		Serial.print("ENABLE\n");
+	}
 
-    int steeringPWM = map(steering_us, 1000, 2000, 0, 255);
-    int throttlePWM = map(throttle_us, 1000, 2000, 0, 255);
+    int steeringPWM = ppmReader->getChannelOutput_pwm(PPM_CHANNEL_AILERON);
+    int throttlePWM = ppmReader->getChannelOutput_pwm(PPM_CHANNEL_ELEVATOR);
     //int throttleLED = map(throttle_us, 1000, 2000, 0, 255);
 
     int throttle = 0;
@@ -113,7 +103,7 @@ void loop()
     else
     {
         Serial.print("LEFT");Serial.print("\n");
-        steering = map(steeringPWM, 128, 0, 0, throttle+); 
+        steering = map(steeringPWM, 128, 0, 0, throttle); 
         t2 = throttle;
         t1 = throttle - steering;
     }
@@ -139,7 +129,6 @@ void loop()
 
  // Serial.println(analogRead(A1));
   
-  
 }
 
 int getMotorDirectionFromInputs(int throttlePWM)
@@ -154,19 +143,10 @@ int getMotorDirectionFromInputs(int throttlePWM)
     }
 }
 
-void interruptProcessPPM()
+void interruptProcessPPM_Wrapper()
 {
-    unsigned long int ppmRisingTimeStampCurr_us = micros();
-
-    ppmPeakDelta_us = ppmRisingTimeStampCurr_us - ppmRisingTimeStampPrev_us;
-
-    ppmChannelPeakDeltas_us[ppmCurrentChannelIndex] = ppmPeakDelta_us;
-    ppmCurrentChannelIndex++;
-
-    if((ppmCurrentChannelIndex > PPM_NUM_CHANNELS) || (ppmPeakDelta_us > PPM_DETECTION_SPACE))
-    {
-       ppmCurrentChannelIndex = 0;
-    }
-
-    ppmRisingTimeStampPrev_us = ppmRisingTimeStampCurr_us;
+	if (ppmReader != nullptr)
+	{
+		ppmReader->interruptProcessPPM();
+	}
 }
